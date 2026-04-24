@@ -1,10 +1,24 @@
 import { runCmd } from "./exec.js";
 
+/**
+ * Run an arbitrary `docker` command.
+ * @param args - Arguments passed directly to the docker CLI. Example: ["ps", "-a"]
+ * @param cwd - Working directory for the process. Default: process.cwd()
+ */
 export const docker = Object.assign(
   async (args: string[], cwd?: string) => runCmd("docker", args, cwd),
   {
+    /**
+     * Run a command inside a running container.
+     * @param container - The container name or id.
+     * @param args - Command and arguments to execute inside the container.
+     */
     exec: async (container: string, args: string[]) =>
       docker(["exec", container, ...args]),
+    /**
+     * Check whether the Docker daemon is reachable.
+     * @returns `true` if `docker info` succeeds, `false` otherwise.
+     */
     verify: async () => {
       try {
         await docker(["info"]);
@@ -17,7 +31,16 @@ export const docker = Object.assign(
 );
 
 export const image = {
+  /**
+   * Return the full metadata JSON for a local image.
+   * @param name - Image name or id. Example: "node:20", "sha256:abc123"
+   */
   inspect: async (name: string) => docker(["image", "inspect", name]),
+  /**
+   * Build a Docker image from a build context directory.
+   * @param tag - Tag to apply to the built image. Example: "my-app:latest"
+   * @param context - Path to the directory containing the Dockerfile.
+   */
   build: async (tag: string, context: string) =>
     docker(["build", "-t", tag, "."], context),
 };
@@ -108,6 +131,10 @@ export const container = {
    */
   start: async (name: string) => docker(["start", name]),
 
+  /**
+   * Create and start a new container from an image.
+   * @param options - Configuration for the container. See `Container.RunOptions` for details.
+   */
   run: async ({
     image,
     command,
