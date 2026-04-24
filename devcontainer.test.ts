@@ -48,8 +48,6 @@ describe(devcontainerNetwork.name, () => {
   });
 
   it("a container on the devcontainer network can reach a server running inside the devcontainer", async () => {
-    const ip = getDevcontainerIp();
-
     const server = createServer((_req, res) => {
       res.writeHead(200);
       res.end("pong");
@@ -61,11 +59,16 @@ describe(devcontainerNetwork.name, () => {
     const { port } = server.address() as AddressInfo;
 
     try {
-      const network = await devcontainerNetwork();
       const result = await container.run({
         image: "alpine:latest",
-        command: ["wget", "-q", "-O", "-", `http://${ip}:${port}`],
-        network,
+        command: [
+          "wget",
+          "-q",
+          "-O",
+          "-",
+          `http://${getDevcontainerIp()}:${port}`,
+        ],
+        network: await devcontainerNetwork(),
         detached: false,
         removeOnStop: true,
       });
