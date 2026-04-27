@@ -5,9 +5,8 @@ import type { AddressInfo } from "node:net";
 import {
   getDevcontainerId,
   getDevcontainerIp,
-  inspectDevcontainer,
   devcontainerNetwork,
-} from "./release/devcontainer.ts";
+} from "./release/devcontainer.js";
 import { container } from "./release";
 
 describe(getDevcontainerId.name, () => {
@@ -15,15 +14,6 @@ describe(getDevcontainerId.name, () => {
     const id = await getDevcontainerId();
     console.log("Detected devcontainer ID:", id);
     assert.match(id, /^[0-9a-f]{12,64}$/i, "devcontainer ID not alphanumeric");
-  });
-});
-
-describe(inspectDevcontainer.name, () => {
-  it("returns JSON metadata for the current devcontainer", async () => {
-    const id = await getDevcontainerId();
-    const result = await inspectDevcontainer(id);
-    const parsed = JSON.parse(result.stdout);
-    assert.ok(Array.isArray(parsed) && parsed.length > 0);
   });
 });
 
@@ -59,7 +49,7 @@ describe(devcontainerNetwork.name, () => {
     const { port } = server.address() as AddressInfo;
 
     try {
-      const result = await container.run({
+      const c = await container.run({
         image: "alpine:latest",
         command: [
           "wget",
@@ -69,10 +59,12 @@ describe(devcontainerNetwork.name, () => {
           `http://${getDevcontainerIp()}:${port}`,
         ],
         network: await devcontainerNetwork(),
-        detached: false,
-        removeOnStop: true,
+        removeOnStop: false,
       });
-      assert.equal(result.stdout.trim(), "pong");
+
+      const { out } = await container.log(c).complete();
+      await container.remove(c);
+      assert.equal(out.trim(), "pong");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

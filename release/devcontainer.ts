@@ -1,33 +1,28 @@
 import { networkInterfaces } from "node:os";
-import { docker } from ".";
+import { container } from ".";
 import { runCmd } from "./exec.js";
 
-/**
- * Return full metadata JSON for a container by id.
- * @param id - The container id to inspect.
- */
-export const inspectDevcontainer = async (id: string) =>
-  docker(["inspect", id]);
-
-/**
- * Detect and return the id of the current devcontainer by reading the hostname.
- * @throws If the hostname is not a valid container id or docker inspect fails.
- */
-export const getDevcontainerId = async (): Promise<string> => {
+export const getDevcontainer = async () => {
   const { stdout } = await runCmd("hostname", []);
   const id = stdout.trim();
 
-  if (/^[0-9a-f]{12,64}$/i.test(id)) {
-    const { stderr } = await inspectDevcontainer(id);
-    if (stderr.trim())
-      throw new Error(`Error inspecting devcontainer id ${id}: ${stderr}`);
-    return id;
-  }
+  if (/^[0-9a-f]{12,64}$/i.test(id))
+    try {
+      return container.resolve(id);
+    } catch (e) {
+      throw new Error(`Error resolving devcontainer id ${id}: ${String(e)}`);
+    }
 
   throw new Error(
     "Could not detect devcontainer id from hostname; cannot use --network container:<id>",
   );
 };
+
+/**
+ * Detect and return the id of the current devcontainer by reading the hostname.
+ * @throws If the hostname is not a valid container id or docker inspect fails.
+ */
+export const getDevcontainerId = () => getDevcontainer().then(({ id }) => id);
 
 /**
  * Return a `container:<id>` network string for use with `--network` when running containers alongside the devcontainer.
@@ -49,6 +44,6 @@ export const getDevcontainerIp = (): string => {
   const ip = Object.values(networkInterfaces())
     .flat()
     .find((i) => i && !i.internal && i.family === "IPv4")?.address;
-  if (!ip) throw new Error("Could not determine devcontainer IP address");
-  return ip;
+  if (ip) return ip;
+  throw new Error("Could not determine devcontainer IP address");
 };

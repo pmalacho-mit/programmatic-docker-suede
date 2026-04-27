@@ -4,7 +4,9 @@
     "test": "node --import tsx --test"
   },
   "dependencies": {
-    "@types/node": "^25.6.0"
+    "@types/dockerode": "^4.0.1",
+    "@types/node": "^25.6.0",
+    "dockerode": "^5.0.0"
   },
   "devDependencies": {
     "tsx": "^4.21.0"

@@ -1,27 +1,37 @@
-import { runCmd } from "./exec.js";
+import Dockerode from "dockerode";
+import CommandStream from "./CommandStream.js";
+import { execFileAsync } from "./exec.js";
+
+/** The underlying Dockerode instance (for advanced use cases). */
+const dockerode = new Dockerode();
+
+export { dockerode };
 
 /**
- * Run an arbitrary `docker` command.
- * @param args - Arguments passed directly to the docker CLI. Example: ["ps", "-a"]
- * @param cwd - Working directory for the process. Default: process.cwd()
+ * Escape hatch: run an arbitrary `docker` CLI command.
+ * Prefer the structured `image` and `container`, APIs where
+ * possible — this exists for one-off commands that dockerode doesn't wrap.
+ *
+ * **NOTE:** There is an existing bug: https://github.com/devcontainers/features/issues/483
+ * which leads to exec commands to time out (by default) after ~500ms.
+ *
+ * @param args - Arguments passed directly to the docker CLI.
+ *               Example: `docker(["rmi", "-f", "my-image"])`
+ * @param cwd  - Working directory for the process. Default: process.cwd()
+ *
+ * Also exposes `.exec()` and `.verify()` as properties.
  */
 export const docker = Object.assign(
-  async (args: string[], cwd?: string) => runCmd("docker", args, cwd),
+  async (args: string[], cwd?: string) =>
+    execFileAsync("docker", args, { cwd, maxBuffer: 16 * 1024 * 1024 }),
   {
     /**
-     * Run a command inside a running container.
-     * @param container - The container name or id.
-     * @param args - Command and arguments to execute inside the container.
-     */
-    exec: async (container: string, args: string[]) =>
-      docker(["exec", container, ...args]),
-    /**
      * Check whether the Docker daemon is reachable.
-     * @returns `true` if `docker info` succeeds, `false` otherwise.
+     * @returns `true` if the daemon responds, `false` otherwise.
      */
-    verify: async () => {
+    verify: async (): Promise<boolean> => {
       try {
-        await docker(["info"]);
+        await dockerode.ping();
         return true;
       } catch {
         return false;
@@ -32,21 +42,45 @@ export const docker = Object.assign(
 
 export const image = {
   /**
-   * Return the full metadata JSON for a local image.
+   * Return the full metadata for a local image.
    * @param name - Image name or id. Example: "node:20", "sha256:abc123"
    */
-  inspect: async (name: string) => docker(["image", "inspect", name]),
+  inspect: async (name: string): Promise<Dockerode.ImageInspectInfo> =>
+    dockerode.getImage(name).inspect(),
+
   /**
    * Build a Docker image from a build context directory.
    * @param tag - Tag to apply to the built image. Example: "my-app:latest"
    * @param context - Path to the directory containing the Dockerfile.
    */
-  build: async (tag: string, context: string) =>
-    docker(["build", "-t", tag, "."], context),
+  build: async (tag: string, context: string): Promise<void> => {
+    const stream = await dockerode.buildImage(
+      { context, src: ["."] },
+      { t: tag },
+    );
+
+    await new Promise<void>((resolve, reject) =>
+      dockerode.modem.followProgress(stream, (err: Error | null) =>
+        err ? reject(err) : resolve(),
+      ),
+    );
+  },
+
+  /**
+   * Remove a local image.
+   * @param name - Image name or id.
+   * @param force - Force removal. Default: true
+   */
+  remove: async (name: string, force = true): Promise<void> => {
+    await dockerode.getImage(name).remove({ force });
+  },
 };
 
-namespace Container {
-  /** Environment variables to pass to a container. Object with string keys and string values. Example: `{ DATABASE_URL: "postgres://...", DEBUG: "true" }` */
+// ---------------------------------------------------------------------------
+// container
+// ---------------------------------------------------------------------------
+
+export namespace Container {
   type Env = Record<string, string>;
 
   export type PublishedPort = {
@@ -66,119 +100,162 @@ namespace Container {
   };
 
   export type RunOptions = {
-    /** Docker image to run (required). Example: "node:20", "browser-control" */
+    /** Docker image to run (required). */
     image: string;
-    /** Command and arguments to execute in the container. Default: none */
+    /** Command and arguments to execute in the container. */
     command?: string[];
-    /** Container name for identification. Default: Docker auto-generated name */
+    /** Container name for identification. */
     name?: string;
-    /** Network to connect the container to. Default: default bridge network */
+    /** Network to connect the container to. */
     network?: string;
-    /** Environment variables to set in the container. Default: none */
+    /** Environment variables to set in the container. */
     env?: Env;
-    /** Ports to publish from container to host. Default: none */
+    /** Ports to publish from container to host. */
     ports?: PublishedPort[];
-    /** Volumes to mount into the container. Default: none */
+    /** Volumes to mount into the container. */
     volumes?: MountedVolume[];
-    /** Additional docker run arguments (e.g., ["--cap-add", "SYS_ADMIN"]). Default: none */
-    extraArgs?: string[];
-    /** Working directory for executing the docker command. Default: process.cwd() */
-    cwd?: string;
-    /** Run container in detached mode (background). Default: true */
-    detached?: boolean;
+    /** Additional create options merged into the Dockerode config. */
+    extraCreateOptions?: Partial<Dockerode.ContainerCreateOptions>;
     /** Automatically remove container when it stops. Default: true */
     removeOnStop?: boolean;
   };
+
+  export type Instance = string | Dockerode.Container;
 }
 
+const resolve = (container: Container.Instance) =>
+  typeof container === "string" ? dockerode.getContainer(container) : container;
+
 export const container = {
-  args: {
-    format: <T extends string>(format: T) => ["-f", format] as const,
-    name: <T extends string>(name: T) => ["--name", name] as const,
-    network: <T extends string>(network: T) => ["--network", network] as const,
-    removeOnStop: "--rm",
-    detached: "-d",
-    env: (key: string, value: string) => ["-e", `${key}=${value}`] as const,
-    ports: ({ host, container }: Container.PublishedPort) =>
-      ["-p", `${host}:${container}`] as const,
-    volumes: ({ source, target, readOnly }: Container.MountedVolume) =>
-      ["-v", `${source}:${target}${readOnly ? ":ro" : ""}`] as const,
-  } as const,
+  resolve,
 
   /**
-   * Inspect a container
-   * @param name - The container name or id.
-   * @param formatting - Go template used by docker --format.
+   * Inspect a container, returning full metadata.
+   * @param container - The container name or id or Dockerode.Container instance.
    */
-  inspect: async (name: string, formatting?: string) =>
-    docker([
-      "container",
-      "inspect",
-      ...(formatting ? ["-f", formatting] : []),
-      name,
-    ]),
+  inspect: async (container: Container.Instance) =>
+    resolve(container).inspect(),
+
   /**
    * Check whether a container is currently running.
-   * @param name - The container name or id.
+   * @param container - The container name or id or Dockerode.Container instance.
    */
-  isRunning: async (name: string) => {
-    const result = await container.inspect(name, "{{.State.Running}}");
-    return result.stdout.trim() === "true";
+  isRunning: async (container: Container.Instance) => {
+    try {
+      const info = await resolve(container).inspect();
+      return info.State.Running;
+    } catch {
+      return false;
+    }
   },
+
   /**
    * Start an existing container.
-   * @param name - The container name or id.
+   * @param container - The container name or id or Dockerode.Container instance.
    */
-  start: async (name: string) => docker(["start", name]),
+  start: async (container: Container.Instance) => resolve(container).start(),
+
+  /**
+   * Run a command inside a running container.
+   * Returns a `CommandStream` synchronously — call `.complete()` to await
+   * the buffered result or `.chunks()` to stream output.
+   *
+   * @param container - The container name or id or Dockerode.Container instance.
+   * @param args - Command and arguments to execute inside the container.
+   */
+  exec: (container: Container.Instance, args: string[]) =>
+    new CommandStream(dockerode, async () => {
+      const exec = await resolve(container).exec({
+        Cmd: args,
+        AttachStdout: true,
+        AttachStderr: true,
+      });
+      return {
+        stream: await exec.start({ Detach: false, Tty: false }),
+        getExitCode: async () => (await exec.inspect()).ExitCode ?? 0,
+      };
+    }),
 
   /**
    * Create and start a new container from an image.
-   * @param options - Configuration for the container. See `Container.RunOptions` for details.
+   * @param options - Configuration for the container.
+   * @returns The created Dockerode.Container handle.
    */
   run: async ({
-    image,
+    image: imageName,
     command,
     name,
     network,
     env,
     ports,
     volumes,
-    extraArgs,
-    cwd,
-    detached = true,
+    extraCreateOptions,
     removeOnStop = true,
   }: Container.RunOptions) => {
-    const dockerArgs = ["run"];
-
-    if (detached) dockerArgs.push(container.args.detached);
-    if (removeOnStop) dockerArgs.push(container.args.removeOnStop);
-
-    if (name) dockerArgs.push(...container.args.name(name));
-    if (network) dockerArgs.push(...container.args.network(network));
-
-    if (env)
-      for (const [key, value] of Object.entries(env))
-        dockerArgs.push(...container.args.env(key, value));
+    const portBindings: Dockerode.PortMap = {};
+    const exposedPorts: Record<string, Record<string, never>> = {};
 
     if (ports)
-      for (const port of ports) dockerArgs.push(...container.args.ports(port));
+      for (const { host, container: containerPort } of ports) {
+        const key = `${containerPort}/tcp`;
+        const hostStr = String(host);
+        const colonIdx = hostStr.lastIndexOf(":");
+        const hostIp = colonIdx > 0 ? hostStr.slice(0, colonIdx) : "";
+        const hostPort = colonIdx > 0 ? hostStr.slice(colonIdx + 1) : hostStr;
 
+        exposedPorts[key] = {};
+        portBindings[key] = [{ HostIp: hostIp, HostPort: hostPort }];
+      }
+
+    const binds: string[] = [];
     if (volumes)
-      for (const volume of volumes)
-        dockerArgs.push(...container.args.volumes(volume));
+      for (const { source, target, readOnly } of volumes)
+        binds.push(`${source}:${target}${readOnly ? ":ro" : ""}`);
 
-    if (extraArgs) dockerArgs.push(...extraArgs);
+    const container = await dockerode.createContainer({
+      Image: imageName,
+      ...(command?.length && { Cmd: command }),
+      ...(name && { name }),
+      ...(env && { Env: Object.entries(env).map(([k, v]) => `${k}=${v}`) }),
+      ExposedPorts: exposedPorts,
+      HostConfig: {
+        PortBindings: portBindings,
+        ...(binds.length && { Binds: binds }),
+        ...(network && { NetworkMode: network }),
+        AutoRemove: removeOnStop,
+      },
+      ...extraCreateOptions,
+    });
 
-    dockerArgs.push(image);
-    if (command?.length) dockerArgs.push(...command);
-
-    return docker(dockerArgs, cwd);
+    await container.start();
+    return container;
   },
+
+  /**
+   * Stream the stdout/stderr of a container as a `CommandStream`.
+   *
+   * Attach before the container exits to avoid missing output. With
+   * `removeOnStop: true` the container self-cleans after the stream closes,
+   * so `container.remove()` is only needed when `removeOnStop` was set to
+   * false.
+   *
+   * @param container - The container to stream logs from.
+   */
+  log: (container: Container.Instance): CommandStream =>
+    new CommandStream(dockerode, async () => ({
+      stream: await resolve(container).logs({
+        stdout: true,
+        stderr: true,
+        follow: true,
+      }),
+      getExitCode: async () => (await resolve(container).wait()).StatusCode,
+    })),
+
   /**
    * Remove a container.
-   * @param name - The name of the container to remove.
+   * @param container - The container name or id or Dockerode.Container instance.
    * @param force - Force removal without stopping. Default: true
    */
-  remove: async (name: string, force = true) =>
-    docker(["rm", ...(force ? ["-f"] : []), name]),
+  remove: async (container: Container.Instance, force = true) =>
+    resolve(container).remove({ force }),
 };

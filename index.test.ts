@@ -12,6 +12,11 @@ describe("docker", () => {
   it("verify() returns true when Docker daemon is reachable", async () => {
     assert.equal(await docker.verify(), true);
   });
+
+  it("docker() runs a raw CLI command and returns stdout", async () => {
+    const { stdout } = await docker(["version", "--format", "{{.Client.Version}}"]);
+    assert.match(stdout.trim(), /^\d+\.\d+/);
+  });
 });
 
 describe("image", () => {
@@ -25,22 +30,27 @@ describe("image", () => {
   after(async () => {
     await rm(tmpDir, { recursive: true, force: true });
     try {
-      await docker(["rmi", "-f", BUILT_IMAGE]);
+      await image.remove(BUILT_IMAGE);
     } catch {}
   });
 
   it("build() builds an image from a Dockerfile", async () => {
-    const result = await image.build(BUILT_IMAGE, tmpDir);
-    assert.ok(typeof result.stderr === "string");
+    // build() resolves void on success, rejects on failure
+    await image.build(BUILT_IMAGE, tmpDir);
   });
 
-  it("inspect() returns JSON metadata for the built image", async () => {
-    const result = await image.inspect(BUILT_IMAGE);
-    const parsed = JSON.parse(result.stdout);
-    assert.ok(Array.isArray(parsed) && parsed.length > 0);
+  it("inspect() returns metadata for the built image", async () => {
+    const info = await image.inspect(BUILT_IMAGE);
     assert.ok(
-      parsed[0].RepoTags?.some((tag: string) => tag.startsWith(BUILT_IMAGE)),
+      info.RepoTags?.some((tag: string) => tag.startsWith(BUILT_IMAGE)),
     );
+  });
+
+  it("remove() deletes an image so subsequent inspect rejects", async () => {
+    const tag = "suede-test-remove-img";
+    await image.build(tag, tmpDir);
+    await image.remove(tag);
+    await assert.rejects(() => image.inspect(tag));
   });
 });
 
@@ -66,42 +76,129 @@ describe("container", () => {
     assert.equal(await container.isRunning(MAIN_CONTAINER), true);
   });
 
-  it("inspect() returns JSON metadata", async () => {
-    const result = await container.inspect(MAIN_CONTAINER);
-    const parsed = JSON.parse(result.stdout);
-    assert.ok(Array.isArray(parsed) && parsed.length > 0);
+  it("isRunning() returns false for a non-existent container", async () => {
+    assert.equal(await container.isRunning("suede-test-ghost"), false);
   });
 
-  it("inspect() supports Go template formatting", async () => {
-    const result = await container.inspect(MAIN_CONTAINER, "{{.State.Status}}");
-    assert.equal(result.stdout.trim(), "running");
+  it("inspect() returns container metadata", async () => {
+    const info = await container.inspect(MAIN_CONTAINER);
+    assert.equal(info.State.Running, true);
+    assert.equal(info.State.Status, "running");
   });
 
   it("docker.exec() captures stdout from a command run inside the container", async () => {
-    const result = await docker.exec(MAIN_CONTAINER, ["echo", "hello"]);
-    assert.equal(result.stdout.trim(), "hello");
+    const { out } = await container
+      .exec(MAIN_CONTAINER, ["echo", "hello"])
+      .complete();
+    assert.equal(out.trim(), "hello");
   });
 
   it("docker.exec() captures multi-word output", async () => {
-    const result = await docker.exec(MAIN_CONTAINER, [
+    const { out } = await container
+      .exec(MAIN_CONTAINER, ["sh", "-c", "echo foo bar baz"])
+      .complete();
+    assert.equal(out.trim(), "foo bar baz");
+  });
+
+  it("exec() captures stderr", async () => {
+    const { err } = await container
+      .exec(MAIN_CONTAINER, ["sh", "-c", "echo err-output >&2"])
+      .complete();
+    assert.equal(err.trim(), "err-output");
+  });
+
+  it("exec() reports non-zero exit codes", async () => {
+    const result = await container
+      .exec(MAIN_CONTAINER, ["sh", "-c", "exit 42"])
+      .complete();
+    assert.equal(result.exit, 42);
+  });
+
+  it('exec() complete("buffer") returns Buffer instances', async () => {
+    const { out } = await container
+      .exec(MAIN_CONTAINER, ["echo", "buftest"])
+      .complete("buffer");
+    assert.ok(Buffer.isBuffer(out));
+    assert.equal(out.toString().trim(), "buftest");
+  });
+
+  it("exec().chunks() streams output incrementally", async () => {
+    const stream = container.exec(MAIN_CONTAINER, [
       "sh",
       "-c",
-      "echo foo bar baz",
+      "echo chunk-test",
     ]);
-    assert.equal(result.stdout.trim(), "foo bar baz");
+    const parts: string[] = [];
+    for await (const chunk of stream.chunks()) {
+      if (chunk.kind === "out") parts.push(chunk.data);
+    }
+    assert.equal(parts.join("").trim(), "chunk-test");
+  });
+
+  it("log() captures stdout from a short-lived container", async () => {
+    const c = await container.run({
+      image: "alpine:latest",
+      command: ["sh", "-c", "echo hello-log"],
+      removeOnStop: false,
+    });
+    const { out } = await container.log(c).complete();
+    await container.remove(c);
+    assert.equal(out.trim(), "hello-log");
+  });
+
+  it("run() mounts volumes into the container", async () => {
+    const name = "suede-test-vol";
+    try {
+      const c = await container.run({
+        image: "alpine:latest",
+        name,
+        command: ["sleep", "30"],
+        volumes: [{ source: "/tmp", target: "/mnt/host-tmp" }],
+      });
+      const result = await container
+        .exec(c, ["ls", "/mnt/host-tmp"])
+        .complete();
+      assert.equal(result.exit, 0);
+    } finally {
+      try {
+        await container.remove(name);
+      } catch {}
+    }
+  });
+
+  it("start() restarts a stopped container", async () => {
+    const name = "suede-test-start";
+    try {
+      await container.run({
+        image: "alpine:latest",
+        name,
+        command: ["sleep", "60"],
+        removeOnStop: false,
+      });
+      await container.resolve(name).stop();
+      assert.equal(await container.isRunning(name), false);
+      await container.start(name);
+      assert.equal(await container.isRunning(name), true);
+    } finally {
+      try {
+        await container.remove(name);
+      } catch {}
+    }
   });
 
   it("run() passes environment variables into the container", async () => {
     const name = "suede-test-env";
     try {
-      await container.run({
+      const instance = await container.run({
         image: "alpine:latest",
         name,
         command: ["sleep", "30"],
         env: { GREETING: "hello_env" },
       });
-      const result = await docker.exec(name, ["sh", "-c", "echo $GREETING"]);
-      assert.equal(result.stdout.trim(), "hello_env");
+      const { out } = await container
+        .exec(instance, ["sh", "-c", "echo $GREETING"])
+        .complete();
+      assert.equal(out.trim(), "hello_env");
     } finally {
       try {
         await container.remove(name);
