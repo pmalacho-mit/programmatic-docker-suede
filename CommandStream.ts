@@ -68,12 +68,13 @@ export default class CommandStream {
   #inprogress?: Promise<Raw.Result>;
   #queue: Array<Raw.Chunk | undefined> = [];
   #notify?: () => void;
-  #factory: StreamFactory;
-  #dockerode: Dockerode;
+
+  readonly factory: StreamFactory;
+  readonly dockerode: Dockerode;
 
   constructor(dockerode: Dockerode, factory: StreamFactory) {
-    this.#factory = factory;
-    this.#dockerode = dockerode;
+    this.factory = factory;
+    this.dockerode = dockerode;
   }
 
   #open(): Promise<Raw.Result> {
@@ -82,7 +83,7 @@ export default class CommandStream {
 
   async #execute(): Promise<Raw.Result> {
     try {
-      const { stream, getExitCode, raw } = await this.#factory();
+      const { stream, getExitCode, raw } = await this.factory();
 
       const stdoutPass = new PassThrough();
       const stderrPass = new PassThrough();
@@ -99,7 +100,7 @@ export default class CommandStream {
       });
 
       if (raw) stream.pipe(stdoutPass);
-      else this.#dockerode.modem.demuxStream(stream, stdoutPass, stderrPass);
+      else this.dockerode.modem.demuxStream(stream, stdoutPass, stderrPass);
 
       await new Promise<void>((resolve, reject) => {
         stream.on("end", resolve);
