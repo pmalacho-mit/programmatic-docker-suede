@@ -39,6 +39,8 @@ namespace Raw {
 type StreamFactory = () => Promise<{
   stream: NodeJS.ReadableStream;
   getExitCode: () => Promise<number>;
+  /** Skip demuxStream and pipe the stream directly to stdout (for non-multiplexed streams like image builds). */
+  raw?: boolean;
 }>;
 
 /**
@@ -66,12 +68,13 @@ export default class CommandStream {
   #inprogress?: Promise<Raw.Result>;
   #queue: Array<Raw.Chunk | undefined> = [];
   #notify?: () => void;
-  #factory: StreamFactory;
-  #dockerode: Dockerode;
+
+  readonly factory: StreamFactory;
+  readonly dockerode: Dockerode;
 
   constructor(dockerode: Dockerode, factory: StreamFactory) {
-    this.#factory = factory;
-    this.#dockerode = dockerode;
+    this.factory = factory;
+    this.dockerode = dockerode;
   }
 
   #open(): Promise<Raw.Result> {
@@ -80,7 +83,7 @@ export default class CommandStream {
 
   async #execute(): Promise<Raw.Result> {
     try {
-      const { stream, getExitCode } = await this.#factory();
+      const { stream, getExitCode, raw } = await this.factory();
 
       const stdoutPass = new PassThrough();
       const stderrPass = new PassThrough();
@@ -96,7 +99,8 @@ export default class CommandStream {
         this.#enqueue({ kind: "err", data: chunk });
       });
 
-      this.#dockerode.modem.demuxStream(stream, stdoutPass, stderrPass);
+      if (raw) stream.pipe(stdoutPass);
+      else this.dockerode.modem.demuxStream(stream, stdoutPass, stderrPass);
 
       await new Promise<void>((resolve, reject) => {
         stream.on("end", resolve);
