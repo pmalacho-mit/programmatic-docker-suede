@@ -1,4 +1,5 @@
-import Dockerode from "dockerode";
+import Dockerode, { type ImageBuildOptions } from "dockerode";
+import { PassThrough } from "node:stream";
 import CommandStream from "./CommandStream.js";
 import { execFileAsync } from "./exec.js";
 
@@ -52,19 +53,46 @@ export const image = {
    * Build a Docker image from a build context directory.
    * @param tag - Tag to apply to the built image. Example: "my-app:latest"
    * @param context - Path to the directory containing the Dockerfile.
+   * @param buildArgs - Build-time variables. Example: `{ BROWSER: "chromium" }`
    */
-  build: async (tag: string, context: string): Promise<void> => {
-    const stream = await dockerode.buildImage(
-      { context, src: ["."] },
-      { t: tag },
-    );
+  build: (
+    tag: string,
+    context: string,
+    options?: ImageBuildOptions,
+  ): CommandStream =>
+    new CommandStream(dockerode, async () => {
+      const src = await dockerode.buildImage(
+        { context, src: ["."] },
+        { t: tag, ...(options ?? {}) },
+      );
 
-    await new Promise<void>((resolve, reject) =>
-      dockerode.modem.followProgress(stream, (err: Error | null) =>
-        err ? reject(err) : resolve(),
-      ),
-    );
-  },
+      const out = new PassThrough();
+      let hasError = false;
+
+      src.on("data", (chunk: Buffer) => {
+        for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
+          try {
+            const obj = JSON.parse(line) as Record<string, unknown>;
+            if (typeof obj.stream === "string") out.push(obj.stream);
+            else if (typeof obj.status === "string") {
+              const detail = obj.progressDetail as { current?: number; total?: number } | undefined;
+              const progress = detail?.current != null ? ` ${detail.current}/${detail.total}` : "";
+              out.push(`${obj.status}${obj.id ? ` ${obj.id}` : ""}${progress}\n`);
+            }
+            if (typeof obj.error === "string") {
+              hasError = true;
+              out.push(`error: ${obj.error}\n`);
+            }
+          } catch {
+            out.push(line + "\n");
+          }
+        }
+      });
+      src.on("end", () => out.end());
+      src.on("error", (err: Error) => out.destroy(err));
+
+      return { stream: out, getExitCode: async () => (hasError ? 1 : 0), raw: true };
+    }),
 
   /**
    * Remove a local image.
