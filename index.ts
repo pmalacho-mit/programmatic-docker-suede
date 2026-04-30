@@ -2,11 +2,17 @@ import Dockerode, { type ImageBuildOptions } from "dockerode";
 import { PassThrough } from "node:stream";
 import CommandStream from "./CommandStream.js";
 import { execFileAsync } from "./exec.js";
+import { tryRemove } from "../browser-control-container-suede/index.js";
 
 /** The underlying Dockerode instance (for advanced use cases). */
 const dockerode = new Dockerode();
 
 export { dockerode };
+
+const tryer =
+  <Fn extends (...args: any[]) => Promise<any>>(fn: Fn) =>
+  (...args: Parameters<Fn>): ReturnType<Fn> | Promise<undefined> =>
+    fn(...args).catch(() => {});
 
 /**
  * Escape hatch: run an arbitrary `docker` CLI command.
@@ -38,6 +44,38 @@ export const docker = Object.assign(
         return false;
       }
     },
+    ...(() => {
+      /**
+       * Creates a Docker network.
+       * @param Name - The name of the network.
+       */
+      const createNetwork = async (Name: string) =>
+        dockerode.createNetwork({ Name });
+      return {
+        createNetwork,
+        /**
+         * Attempt to create a Docker network, silently ignores errors (e.g. already exists).
+         * @param Name - The name of the network.
+         */
+        tryCreateNetwork: tryer(createNetwork),
+      };
+    })(),
+    ...(() => {
+      /**
+       * Removes a Docker network.
+       * @param Name - The name of the network.
+       */
+      const removeNetwork = async (Name: string) =>
+        dockerode.getNetwork(Name).remove();
+      return {
+        removeNetwork,
+        /**
+         * Attempt to remove a Docker network, silently ignores errors (e.g. does not exist).
+         * @param Name - The name of the network.
+         */
+        tryRemoveNetwork: tryer(removeNetwork),
+      };
+    })(),
   },
 );
 
@@ -70,14 +108,24 @@ export const image = {
       let hasError = false;
 
       src.on("data", (chunk: Buffer) => {
-        for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
+        for (const line of chunk
+          .toString("utf-8")
+          .split("\n")
+          .filter(Boolean)) {
           try {
             const obj = JSON.parse(line) as Record<string, unknown>;
             if (typeof obj.stream === "string") out.push(obj.stream);
             else if (typeof obj.status === "string") {
-              const detail = obj.progressDetail as { current?: number; total?: number } | undefined;
-              const progress = detail?.current != null ? ` ${detail.current}/${detail.total}` : "";
-              out.push(`${obj.status}${obj.id ? ` ${obj.id}` : ""}${progress}\n`);
+              const detail = obj.progressDetail as
+                | { current?: number; total?: number }
+                | undefined;
+              const progress =
+                detail?.current != null
+                  ? ` ${detail.current}/${detail.total}`
+                  : "";
+              out.push(
+                `${obj.status}${obj.id ? ` ${obj.id}` : ""}${progress}\n`,
+              );
             }
             if (typeof obj.error === "string") {
               hasError = true;
@@ -91,7 +139,11 @@ export const image = {
       src.on("end", () => out.end());
       src.on("error", (err: Error) => out.destroy(err));
 
-      return { stream: out, getExitCode: async () => (hasError ? 1 : 0), raw: true };
+      return {
+        stream: out,
+        getExitCode: async () => (hasError ? 1 : 0),
+        raw: true,
+      };
     }),
 
   /**
@@ -279,11 +331,23 @@ export const container = {
       getExitCode: async () => (await resolve(container).wait()).StatusCode,
     })),
 
-  /**
-   * Remove a container.
-   * @param container - The container name or id or Dockerode.Container instance.
-   * @param force - Force removal without stopping. Default: true
-   */
-  remove: async (container: Container.Instance, force = true) =>
-    resolve(container).remove({ force }),
+  ...(() => {
+    /**
+     * Remove a container.
+     * @param container - The container name or id or Dockerode.Container instance.
+     * @param force - Force removal without stopping. Default: true
+     */
+    const remove = async (container: Container.Instance, force = true) =>
+      resolve(container).remove({ force });
+
+    return {
+      remove,
+      /**
+       * Attempt to remove a container.
+       * @param container - The container name or id or Dockerode.Container instance.
+       * @param force - Force removal without stopping. Default: true
+       */
+      tryRemove: tryer(remove),
+    };
+  })(),
 };
