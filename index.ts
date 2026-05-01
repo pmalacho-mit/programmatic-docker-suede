@@ -2,21 +2,10 @@ import Dockerode, { type ImageBuildOptions } from "dockerode";
 import { PassThrough } from "node:stream";
 import CommandStream from "./CommandStream.js";
 import { execFileAsync } from "./exec.js";
-
-type FollowProgressEvent = {
-  stream?: string;
-  error?: string;
-  [key: string]: unknown;
-};
+import { tryRemove } from "../browser-control-container-suede/index.js";
 
 /** The underlying Dockerode instance (for advanced use cases). */
-const dockerode = new Dockerode() as Dockerode & {
-  followProgress: (
-    stream: NodeJS.ReadableStream,
-    onFinished: (err: Error | null, output: FollowProgressEvent[]) => void,
-    onProgress?: (event: FollowProgressEvent) => void,
-  ) => void;
-};
+const dockerode = new Dockerode();
 
 export { dockerode };
 
@@ -107,41 +96,52 @@ export const image = {
   build: (
     tag: string,
     context: string,
-    options?: ImageBuildOptions & {
-      /**
-       * Restrict the context to specific files or directories.
-       * If you experience much longer build times than expected,
-       * try setting this to only the files needed for the build.
-       */
-      include?: string[];
-    },
+    options?: ImageBuildOptions,
   ): CommandStream =>
     new CommandStream(dockerode, async () => {
-      const { include, ...buildOptions } = options ?? {};
       const src = await dockerode.buildImage(
-        { context, src: include ?? ["."] },
-        { t: tag, ...buildOptions },
+        { context, src: ["."] },
+        { t: tag, ...(options ?? {}) },
       );
 
       const out = new PassThrough();
-      let resolveExit!: (code: number) => void;
-      const exitCodePromise = new Promise<number>((res) => (resolveExit = res));
+      let hasError = false;
 
-      dockerode.followProgress(
-        src,
-        (err) => {
-          resolveExit(err ? 1 : 0);
-          out.end();
-        },
-        (event) => {
-          if (event.stream) out.push(event.stream);
-          else if (event.error) out.push(`ERROR: ${event.error}\n`);
-        },
-      );
+      src.on("data", (chunk: Buffer) => {
+        for (const line of chunk
+          .toString("utf-8")
+          .split("\n")
+          .filter(Boolean)) {
+          try {
+            const obj = JSON.parse(line) as Record<string, unknown>;
+            if (typeof obj.stream === "string") out.push(obj.stream);
+            else if (typeof obj.status === "string") {
+              const detail = obj.progressDetail as
+                | { current?: number; total?: number }
+                | undefined;
+              const progress =
+                detail?.current != null
+                  ? ` ${detail.current}/${detail.total}`
+                  : "";
+              out.push(
+                `${obj.status}${obj.id ? ` ${obj.id}` : ""}${progress}\n`,
+              );
+            }
+            if (typeof obj.error === "string") {
+              hasError = true;
+              out.push(`error: ${obj.error}\n`);
+            }
+          } catch {
+            out.push(line + "\n");
+          }
+        }
+      });
+      src.on("end", () => out.end());
+      src.on("error", (err: Error) => out.destroy(err));
 
       return {
         stream: out,
-        getExitCode: () => exitCodePromise,
+        getExitCode: async () => (hasError ? 1 : 0),
         raw: true,
       };
     }),
