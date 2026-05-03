@@ -11,6 +11,14 @@ type FollowProgressEvent = {
 
 /** The underlying Dockerode instance (for advanced use cases). */
 const dockerode = new Dockerode() as Dockerode & {
+  /**
+   * The `followProgress` method is not included in the Dockerode type definitions, so we augment the type here.
+   * Added to library via: https://github.com/apocas/dockerode/pull/824
+   * @param stream
+   * @param onFinished
+   * @param onProgress
+   * @returns
+   */
   followProgress: (
     stream: NodeJS.ReadableStream,
     onFinished: (err: Error | null, output: FollowProgressEvent[]) => void,
