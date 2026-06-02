@@ -14,7 +14,11 @@ describe("docker", () => {
   });
 
   it("docker() runs a raw CLI command and returns stdout", async () => {
-    const { stdout } = await docker(["version", "--format", "{{.Client.Version}}"]);
+    const { stdout } = await docker([
+      "version",
+      "--format",
+      "{{.Client.Version}}",
+    ]);
     assert.match(stdout.trim(), /^\d+\.\d+/);
   });
 });
@@ -35,8 +39,14 @@ describe("image", () => {
   });
 
   it("build() builds an image from a Dockerfile", async () => {
-    // build() resolves void on success, rejects on failure
-    await image.build(BUILT_IMAGE, tmpDir);
+    // build() returns a lazy CommandStream — drive it with .complete() to run
+    // the build, then assert it exited cleanly.
+    const result = await image.build(BUILT_IMAGE, tmpDir).complete();
+    assert.equal(
+      result.exit,
+      0,
+      "error" in result ? result.error?.message : undefined,
+    );
   });
 
   it("inspect() returns metadata for the built image", async () => {
@@ -48,7 +58,7 @@ describe("image", () => {
 
   it("remove() deletes an image so subsequent inspect rejects", async () => {
     const tag = "suede-test-remove-img";
-    await image.build(tag, tmpDir);
+    await image.build(tag, tmpDir).complete();
     await image.remove(tag);
     await assert.rejects(() => image.inspect(tag));
   });
