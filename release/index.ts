@@ -155,6 +155,23 @@ export const image = {
     }),
 
   /**
+   * Pull an image from a registry, resolving once the pull completes.
+   *
+   * Needed because {@link container.run} creates containers via the Docker
+   * Engine API, which — unlike the `docker run` CLI — does not auto-pull a
+   * missing image. Call this first when the image may not be present locally.
+   * @param name - Image name with optional tag. Example: "alpine:latest"
+   */
+  pull: async (name: string): Promise<void> => {
+    const stream = await dockerode.pull(name);
+    await new Promise<void>((resolve, reject) =>
+      dockerode.followProgress(stream, (err) =>
+        err ? reject(err) : resolve(),
+      ),
+    );
+  },
+
+  /**
    * Remove a local image.
    * @param name - Image name or id.
    * @param force - Force removal. Default: true
