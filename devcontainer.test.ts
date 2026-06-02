@@ -2,39 +2,41 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import {
-  getDevcontainerId,
-  getDevcontainerIp,
-  devcontainerNetwork,
-} from "./release/devcontainer.js";
+import { devcontainer } from "./release/devcontainer.js";
 import { container } from "./release";
 
-describe(getDevcontainerId.name, () => {
+describe("devcontainer.id", () => {
   it("should return a valid devcontainer ID", async () => {
-    const id = await getDevcontainerId();
+    const id = await devcontainer.id();
     console.log("Detected devcontainer ID:", id);
     assert.match(id, /^[0-9a-f]{12,64}$/i, "devcontainer ID not alphanumeric");
   });
 });
 
-describe(getDevcontainerIp.name, () => {
+describe("devcontainer.ip", () => {
   it("returns a non-loopback IPv4 address", () => {
-    const ip = getDevcontainerIp();
+    const ip = devcontainer.ip();
     assert.match(ip, /^\d{1,3}(\.\d{1,3}){3}$/);
     assert.notEqual(ip, "127.0.0.1");
   });
 });
 
-describe(devcontainerNetwork.name, () => {
-  it("returns a network string in the form container:<id>", async () => {
-    const network = await devcontainerNetwork();
-    assert.match(network, /^container:[0-9a-f]{12,64}$/i);
+describe("devcontainer.network", () => {
+  it("returns a non-gate network name", async () => {
+    const network = await devcontainer.network();
+    assert.equal(typeof network, "string");
+    assert.ok(network.length > 0, "network name is empty");
+    assert.doesNotMatch(
+      network,
+      /(^|[-_])gate$/,
+      "should not be the gate network",
+    );
   });
 
   it("accepts an explicit devcontainer ID", async () => {
-    const id = await getDevcontainerId();
-    const network = await devcontainerNetwork(id);
-    assert.equal(network, `container:${id}`);
+    const id = await devcontainer.id();
+    const network = await devcontainer.network(id);
+    assert.equal(network, await devcontainer.network());
   });
 
   it("a container on the devcontainer network can reach a server running inside the devcontainer", async () => {
@@ -56,9 +58,9 @@ describe(devcontainerNetwork.name, () => {
           "-q",
           "-O",
           "-",
-          `http://${getDevcontainerIp()}:${port}`,
+          `http://${devcontainer.ip()}:${port}`,
         ],
-        network: await devcontainerNetwork(),
+        network: await devcontainer.network(),
         removeOnStop: false,
       });
 
