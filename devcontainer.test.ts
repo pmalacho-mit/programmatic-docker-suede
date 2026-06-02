@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { devcontainer } from "./release/devcontainer.js";
-import { container } from "./release";
+import { container, image } from "./release";
 
 describe("devcontainer.id", () => {
   it("should return a valid devcontainer ID", async () => {
@@ -51,6 +51,9 @@ describe("devcontainer.network", () => {
     const { port } = server.address() as AddressInfo;
 
     try {
+      // container.run creates via the Engine API, which does not auto-pull a
+      // missing image — ensure it's present first (e.g. on a fresh daemon).
+      await image.pull("alpine:latest");
       const c = await container.run({
         image: "alpine:latest",
         command: [

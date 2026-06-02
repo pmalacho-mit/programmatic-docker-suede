@@ -62,7 +62,7 @@ export const devcontainer = Object.assign(
         throw new Error("Could not determine the devcontainer's network");
       if (!idOrConfig || typeof idOrConfig === "string" || !idOrConfig.filter)
         throw new Error(
-          "Multiple networks found, and no `filter` was provider to select one.",
+          "Multiple networks found, and no `filter` was provided to select one.",
         );
       return idOrConfig.filter(networks);
     },
