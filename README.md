@@ -6,9 +6,9 @@ Thin TypeScript wrappers around [Dockerode](https://github.com/apocas/dockerode)
 
 **[index.ts](index.ts)** — main entry point
 
-- `docker(args)` — raw `docker` CLI escape hatch; `docker.verify()` pings the daemon
-- `image` — `build(tag, context)`, `inspect(name)`, `remove(name)`
-- `container` — `run(opts)`, `exec(c, args)`, `log(c)`, `inspect(c)`, `isRunning(c)`, `start(c)`, `remove(c)`
+- `docker(args, cwd?)` — raw `docker` CLI escape hatch. Also exposes `docker.verify()` (pings the daemon), `docker.createNetwork(name)` / `docker.tryCreateNetwork(name)`, and `docker.removeNetwork(name)` / `docker.tryRemoveNetwork(name)` (the `try*` variants swallow errors)
+- `image` — `build(tag, context, options?)`, `inspect(name)`, `remove(name, force?)`. `build` options extend Dockerode's `ImageBuildOptions` plus `include?: string[]` to restrict the build context
+- `container` — `run(opts)`, `exec(c, args)`, `log(c)`, `inspect(c)`, `isRunning(c)`, `start(c)`, `resolve(c)`, `remove(c, force?)`, `tryRemove(c, force?)`
 - `dockerode` — underlying Dockerode instance for advanced use
 - `Container` namespace — `RunOptions`, `Instance`, `PublishedPort`, `MountedVolume` types
 
@@ -21,6 +21,7 @@ Both methods accept an optional encoding arg (`"string"` | `"buffer"` | `{ out?,
 
 **[devcontainer.ts](devcontainer.ts)** — devcontainer networking utilities
 
+- `getDevcontainer()` — detects the current devcontainer from hostname and returns its Dockerode `Container` handle
 - `getDevcontainerId()` — detects the current devcontainer's container ID from hostname
 - `getDevcontainerIp()` — returns the devcontainer's non-loopback IPv4 (needed because `127.0.0.1`-bound servers aren't reachable from a joined container)
-- `devcontainerNetwork(id?)` — returns `"container:<id>"` for use as `network` in `container.run()`
+- `devcontainerNetwork(id?)` — async; returns `"container:<id>"` for use as `network` in `container.run()` (defaults to the auto-detected devcontainer id)
