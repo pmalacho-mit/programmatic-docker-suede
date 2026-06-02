@@ -49,13 +49,12 @@ describe("devcontainer.network", () => {
       server.listen(0, "0.0.0.0", resolve);
     });
     const { port } = server.address() as AddressInfo;
+    const tag = "alpine:latest";
 
     try {
-      // container.run creates via the Engine API, which does not auto-pull a
-      // missing image — ensure it's present first (e.g. on a fresh daemon).
-      await image.pull("alpine:latest");
+      await image.inspect(tag).catch(() => image.pull(tag));
       const c = await container.run({
-        image: "alpine:latest",
+        image: tag,
         command: [
           "wget",
           "-q",
