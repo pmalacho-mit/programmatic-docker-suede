@@ -21,7 +21,12 @@ Both methods accept an optional encoding arg (`"string"` | `"buffer"` | `{ out?,
 
 **[devcontainer.ts](devcontainer.ts)** — devcontainer networking utilities
 
-- `getDevcontainer()` — detects the current devcontainer from hostname and returns its Dockerode `Container` handle
-- `getDevcontainerId()` — detects the current devcontainer's container ID from hostname
-- `getDevcontainerIp()` — returns the devcontainer's non-loopback IPv4 (needed because `127.0.0.1`-bound servers aren't reachable from a joined container)
-- `devcontainerNetwork(id?)` — async; returns `"container:<id>"` for use as `network` in `container.run()` (defaults to the auto-detected devcontainer id)
+Default export `devcontainer` is a callable object: calling it detects the current devcontainer (by hostname) and resolves it to a Dockerode `Container`. Its methods let a sibling container join the devcontainer's network as a peer (`--network <name>`) and reach servers inside it.
+
+- `devcontainer()` — detects the current devcontainer from hostname and returns its Dockerode `Container` handle
+- `devcontainer.id()` — resolves to the current devcontainer's container id
+- `devcontainer.network(idOrConfig?)` — resolves to the NAME of the network the devcontainer is attached to, for use as `network` in `container.run()`. If attached to multiple networks, pass `{ id, filter }` to choose one (throws otherwise). Defaults to the auto-detected devcontainer
+- `devcontainer.networks(id?)` — resolves to the NAMES of every network the devcontainer is attached to
+- `devcontainer.inspect(instance?)` — `docker inspect` for the devcontainer (or a given instance)
+- `devcontainer.ip()` — the devcontainer's non-loopback IPv4 from local `node:os` interfaces (only works *inside* the devcontainer). Servers bound to `127.0.0.1` aren't reachable from a peer container, so bind to `0.0.0.0`
+- `devcontainer.ip.inspect(idOrConfig?)` — the devcontainer's IPv4 as reported by `docker inspect` (works from the host or a sibling container); reads the address on the network `devcontainer.network` selects
