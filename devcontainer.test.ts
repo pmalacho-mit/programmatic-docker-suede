@@ -5,6 +5,52 @@ import type { AddressInfo } from "node:net";
 import { devcontainer } from "./release/devcontainer.js";
 import { container, image } from "./release";
 
+/**
+ * Stand up a throwaway server inside the devcontainer, then ask a sibling
+ * container joined to `devcontainer.network()` to fetch it at `address`.
+ * Resolves to what the sibling actually received.
+ */
+const fetchedBySibling = async (address: () => string | Promise<string>) => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200);
+    res.end("pong");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "0.0.0.0", resolve);
+  });
+  const { port } = server.address() as AddressInfo;
+  const tag = "alpine:latest";
+
+  try {
+    await image.inspect(tag).catch(() => image.pull(tag));
+    const c = await container.run({
+      image: tag,
+      command: ["wget", "-q", "-O", "-", `http://${await address()}:${port}`],
+      network: await devcontainer.network(),
+      removeOnStop: false,
+    });
+
+    const { out } = await container.log(c).complete();
+    await container.remove(c);
+    return out.trim();
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+};
+
+describe("devcontainer.topology", () => {
+  it("reports a known topology, and reports it consistently", async () => {
+    const topology = await devcontainer.topology();
+    console.log("Detected topology:", topology);
+    assert.ok(
+      topology === "peer" || topology === "host",
+      `unexpected topology ${topology}`,
+    );
+    assert.equal(await devcontainer.topology(), topology);
+  });
+});
+
 describe("devcontainer.id", () => {
   it("should return a valid devcontainer ID", async () => {
     const id = await devcontainer.id();
@@ -40,37 +86,23 @@ describe("devcontainer.network", () => {
   });
 
   it("a container on the devcontainer network can reach a server running inside the devcontainer", async () => {
-    const server = createServer((_req, res) => {
-      res.writeHead(200);
-      res.end("pong");
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "0.0.0.0", resolve);
-    });
-    const { port } = server.address() as AddressInfo;
-    const tag = "alpine:latest";
+    assert.equal(await fetchedBySibling(() => devcontainer.ip()), "pong");
+  });
+});
 
-    try {
-      await image.inspect(tag).catch(() => image.pull(tag));
-      const c = await container.run({
-        image: tag,
-        command: [
-          "wget",
-          "-q",
-          "-O",
-          "-",
-          `http://${devcontainer.ip()}:${port}`,
-        ],
-        network: await devcontainer.network(),
-        removeOnStop: false,
-      });
+describe("devcontainer.ip.inspect", () => {
+  it("returns an IPv4 address", async () => {
+    assert.match(await devcontainer.ip.inspect(), /^\d{1,3}(\.\d{1,3}){3}$/);
+  });
 
-      const { out } = await container.log(c).complete();
-      await container.remove(c);
-      assert.equal(out.trim(), "pong");
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+  // The address differs by topology — the devcontainer's own address on the
+  // network under "peer", that network's gateway under "host" — but it must
+  // reach the devcontainer either way. This is what regressed when the daemon
+  // moved from docker-outside-of-docker to docker-in-docker.
+  it("returns an address a sibling on that network can reach the devcontainer at", async () => {
+    assert.equal(
+      await fetchedBySibling(() => devcontainer.ip.inspect()),
+      "pong",
+    );
   });
 });
