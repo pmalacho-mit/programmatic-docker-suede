@@ -7,17 +7,21 @@ Thin TypeScript wrappers around [Dockerode](https://github.com/apocas/dockerode)
 **[index.ts](index.ts)** — main entry point
 
 - `docker(args, cwd?)` — raw `docker` CLI escape hatch. Also exposes `docker.verify()` (pings the daemon), `docker.createNetwork(name)` / `docker.tryCreateNetwork(name)`, and `docker.removeNetwork(name)` / `docker.tryRemoveNetwork(name)` (the `try*` variants swallow errors)
-- `image` — `build(tag, context, options?)`, `inspect(name)`, `remove(name, force?)`. `build` options extend Dockerode's `ImageBuildOptions` plus `include?: string[]` to restrict the build context
+- `image` — `build(tag, context, options?)`, `inspect(name)`, `pull(name)`, `remove(name, force?)`. `build` options extend Dockerode's `ImageBuildOptions` plus `include?: string[]` to restrict the build context. `build` returns a `CommandStream`; a failed build resolves with a non-zero `exit` and an `error` — for the classic builder *and* for BuildKit (`version: "2"`)
 - `container` — `run(opts)`, `exec(c, args)`, `log(c)`, `inspect(c)`, `isRunning(c)`, `start(c)`, `resolve(c)`, `remove(c, force?)`, `tryRemove(c, force?)`
 - `dockerode` — underlying Dockerode instance for advanced use
 - `Container` namespace — `RunOptions`, `Instance`, `PublishedPort`, `MountedVolume` types
 
-**[CommandStream.ts](CommandStream.ts)** — returned by `container.exec()` and `container.log()`
+**[CommandStream.ts](CommandStream.ts)** — returned by `image.build()`, `container.exec()` and `container.log()`
 
-- `.complete()` — buffers all output; returns `{ out, err, exit }`. Never throws.
+- `.complete()` — buffers all output; returns `{ out, err, exit, error? }`. Never throws — failures come back as a non-zero `exit` with an `error`.
 - `.chunks()` — async generator yielding `{ kind: "out"|"err", data }` as they arrive; call `.complete()` after to get the exit code
 
 Both methods accept an optional encoding arg (`"string"` | `"buffer"` | `{ out?, err? }`).
+
+**[progress.ts](progress.ts)** — reader for Docker's JSON progress streams, used by `image.build()` and `image.pull()`
+
+- `followProgress(stream, onText)` — forwards human-readable output and resolves with the daemon's `Failure` (or `undefined`). Decodes BuildKit's `moby.buildkit.trace` records — base64-encoded protobuf that `dockerode.followProgress` passes through undecoded — into `--progress=plain`-style lines, and reports failed steps, which BuildKit only reports inside those records.
 
 **[devcontainer.ts](devcontainer.ts)** — devcontainer networking utilities
 

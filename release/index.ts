@@ -2,6 +2,7 @@ import Dockerode, { type ImageBuildOptions } from "dockerode";
 import { PassThrough } from "node:stream";
 import CommandStream from "./CommandStream.js";
 import { execFileAsync } from "./exec.js";
+import { followProgress, type Failure } from "./progress.js";
 
 type FollowProgressEvent = {
   stream?: string;
@@ -14,6 +15,11 @@ const dockerode = new Dockerode() as Dockerode & {
   /**
    * The `followProgress` method is not included in the Dockerode type definitions, so we augment the type here.
    * Added to library via: https://github.com/apocas/dockerode/pull/824
+   *
+   * **NOTE:** `image.build` and `image.pull` deliberately use the local
+   * {@link followProgress} instead: this one hands back BuildKit's `RUN` output
+   * still base64-encoded, and its `onFinished` callback reports no error for a
+   * failed build. Prefer the local one for build/pull streams.
    * @param stream
    * @param onFinished
    * @param onProgress
@@ -108,6 +114,13 @@ export const image = {
 
   /**
    * Build a Docker image from a build context directory.
+   *
+   * Returns a lazy {@link CommandStream}: nothing runs until `.complete()` or
+   * `.chunks()` is called. A failed build resolves with a non-zero `exit` — the
+   * failing step's exit code when the daemon reports one, otherwise `1` — and
+   * an `error` carrying the daemon's message. Works for both the classic
+   * builder and BuildKit (`version: "2"`).
+   *
    * @param tag - Tag to apply to the built image. Example: "my-app:latest"
    * @param context - Path to the directory containing the Dockerfile.
    * @param buildArgs - Build-time variables. Example: `{ BROWSER: "chromium" }`
@@ -132,24 +145,21 @@ export const image = {
       );
 
       const out = new PassThrough();
-      let resolveExit!: (code: number) => void;
-      const exitCodePromise = new Promise<number>((res) => (resolveExit = res));
-
-      dockerode.followProgress(
-        src,
-        (err) => {
-          resolveExit(err ? 1 : 0);
+      let failure: Failure | undefined;
+      const finished = followProgress(src, (text) => out.push(text)).then(
+        (reported) => {
+          failure = reported;
           out.end();
-        },
-        (event) => {
-          if (event.stream) out.push(event.stream);
-          else if (event.error) out.push(`ERROR: ${event.error}\n`);
         },
       );
 
       return {
         stream: out,
-        getExitCode: () => exitCodePromise,
+        getExitCode: async () => {
+          await finished;
+          return failure ? (failure.code ?? 1) : 0;
+        },
+        getError: () => failure && new Error(failure.message),
         raw: true,
       };
     }),
@@ -160,15 +170,14 @@ export const image = {
    * Needed because {@link container.run} creates containers via the Docker
    * Engine API, which — unlike the `docker run` CLI — does not auto-pull a
    * missing image. Call this first when the image may not be present locally.
+   *
+   * Rejects if the daemon reports the pull failed.
    * @param name - Image name with optional tag. Example: "alpine:latest"
    */
   pull: async (name: string): Promise<void> => {
     const stream = await dockerode.pull(name);
-    await new Promise<void>((resolve, reject) =>
-      dockerode.followProgress(stream, (err) =>
-        err ? reject(err) : resolve(),
-      ),
-    );
+    const failure = await followProgress(stream, () => {});
+    if (failure) throw new Error(failure.message);
   },
 
   /**

@@ -20,7 +20,9 @@ const encode = (buffer: Buffer, encoding: Encoding) =>
 export type CompletedResult<Out = string, Err = string> = {
   out: Out;
   err: Err;
-} & ({ exit: 0 } | { exit: number; error?: Error });
+  // `error` is declared on both arms — as `undefined` on the success arm — so
+  // that `if (result.exit !== 0) ... result.error` reads without narrowing.
+} & ({ exit: 0; error?: undefined } | { exit: number; error?: Error });
 
 export type Chunk<Out = string, Err = string> =
   | { kind: "out"; data: Out }
@@ -39,6 +41,8 @@ namespace Raw {
 type StreamFactory = () => Promise<{
   stream: NodeJS.ReadableStream;
   getExitCode: () => Promise<number>;
+  /** Detail for a non-zero exit, surfaced as `error` on the completed result. Called after `getExitCode`. */
+  getError?: () => Error | undefined;
   /** Skip demuxStream and pipe the stream directly to stdout (for non-multiplexed streams like image builds). */
   raw?: boolean;
 }>;
@@ -83,7 +87,7 @@ export default class CommandStream {
 
   async #execute(): Promise<Raw.Result> {
     try {
-      const { stream, getExitCode, raw } = await this.factory();
+      const { stream, getExitCode, getError, raw } = await this.factory();
 
       const stdoutPass = new PassThrough();
       const stderrPass = new PassThrough();
@@ -109,10 +113,13 @@ export default class CommandStream {
 
       this.#enqueue(); // signal end of chunks
 
+      const exit = await getExitCode();
+
       return {
         stdout: Buffer.concat(stdout),
         stderr: Buffer.concat(stderr),
-        exit: await getExitCode(),
+        exit,
+        error: exit === 0 ? undefined : getError?.(),
       };
     } catch (err) {
       this.#enqueue();
